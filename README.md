@@ -1,4 +1,4 @@
-# Intelligent Vision & Security System (M4 Optimized)
+# Real-time-Edge-Security-System
 
 ## 📌 Project Overview
 A high-performance **AI Surveillance System** optimized for Apple Silicon (M4/M3/M2). This system integrates **Local Biometrics** (DeepFace), **Real-Time Object Detection** (YOLOv8), and **Multimodal Cloud AI** (Google Gemini 1.5 Flash) to provide a comprehensive security dashboard for enterprise monitoring.
