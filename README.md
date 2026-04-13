@@ -34,8 +34,8 @@ A high-performance **AI Surveillance System** optimized for Apple Silicon (M4/M3
 ### 2. Steps to Run
 ```bash
 # Clone the Repository
-git clone [https://github.com/UmaMaheswar2005/SMART_VISION_SYSTEM.git](https://github.com/UmaMaheswar2005/Real-time-Edge-Security-System.git)
-cd SMART_VISION_SYSTEM
+git clone [https://github.com/UmaMaheswar2005/Real-time-Edge-Security-System.git](https://github.com/UmaMaheswar2005/Real-time-Edge-Security-System.git)
+cd Real-time-Edge-Security-System
 
 # Environment Configuration
 conda activate vision_system
