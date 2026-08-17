@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.git
+.gitignore
+README.md
+repomix-output.xml
+test.py
+collect_data.py
+intruders/
+backend/surveillance_logs/
