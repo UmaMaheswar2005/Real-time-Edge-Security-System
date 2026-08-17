@@ -1,0 +1,25 @@
+# Secret keys
+backend/.env
+.env
+
+# Python junk & caches
+__pycache__/
+*.py[cod]
+.DS_Store
+.Python
+
+# Virtual environments
+venv/
+env/
+
+# Large Model Weights (Let Ultralytics/PyTorch download them automatically or manage via LFS)
+*.pt
+
+# Runtime outputs, logs, and capture folders
+intruders/
+backend/surveillance_logs/
+project_logs.csv
+
+# Large generated exports
+repomix-output.xmlbackend/dataset/
+backend/dataset/
