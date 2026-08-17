@@ -12,7 +12,7 @@ __pycache__/
 venv/
 env/
 
-# Large Model Weights (Let Ultralytics/PyTorch download them automatically or manage via LFS)
+# Model Weights
 *.pt
 
 # Runtime outputs, logs, and capture folders
@@ -21,5 +21,4 @@ backend/surveillance_logs/
 project_logs.csv
 
 # Large generated exports
-repomix-output.xmlbackend/dataset/
-backend/dataset/
+repomix-output.xml
