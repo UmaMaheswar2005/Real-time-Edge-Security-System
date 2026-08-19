@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Edge Security — Live Dashboard</title>
+<style>
+  /* ── Reset & base ─────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0a0e1a;
+    --surface:   #111827;
+    --surface2:  #1e293b;
+    --border:    #1e2d40;
+    --text:      #e2e8f0;
+    --muted:     #64748b;
+    --accent:    #38bdf8;
+
+    --low:       #22c55e;
+    --medium:    #f97316;
+    --high:      #ef4444;
+    --admin:     #38bdf8;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ──────────────────────────────────────────────── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    gap: 12px;
+  }
+
+  .header-left { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+
+  .logo-dot {
+    width: 10px; height: 10px;
+    background: var(--accent);
+    border-radius: 50%;
+    animation: pulse-dot 2s infinite;
+  }
+  @keyframes pulse-dot {
+    0%,100% { opacity:1; transform:scale(1); }
+    50%      { opacity:.5; transform:scale(1.4); }
+  }
+
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: .04em; }
+
+  /* Backend URL bar */
+  .url-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    flex: 1;
+    max-width: 420px;
+  }
+  .url-bar span { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  #urlInput {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--accent);
+    font-size: 12px;
+    font-family: monospace;
+    flex: 1;
+    min-width: 0;
+  }
+  #urlSaveBtn {
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  /* Connection status */
+  .conn-badge {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    flex-shrink: 0;
+  }
+  .conn-badge .dot { width:7px; height:7px; border-radius:50%; }
+
+  .conn-checking { background:#1e293b; color:#94a3b8; }
+  .conn-checking .dot { background:#94a3b8; }
+  .conn-connected { background:#052e16; color:var(--low); }
+  .conn-connected .dot { background:var(--low); animation:pulse-dot 2s infinite; }
+  .conn-offline   { background:#3b0a0a; color:var(--high); }
+  .conn-offline   .dot { background:var(--high); }
+
+  /* ── Main grid ────────────────────────────────────────────── */
+  main {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 16px;
+    padding: 16px;
+    flex: 1;
+  }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  /* ── Video pane ───────────────────────────────────────────── */
+  .video-wrap {
+    position: relative;
+    background: #000;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    aspect-ratio: 16/9;
+  }
+  #video, #canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+  }
+  #canvas { pointer-events: none; }
+
+  /* Camera controls */
+  .cam-controls {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .btn {
+    padding: 8px 18px;
+    border-radius: 6px;
+    border: none;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity .15s, transform .1s;
+  }
+  .btn:hover   { opacity:.85; }
+  .btn:active  { transform:scale(.97); }
+  .btn:disabled { opacity:.35; cursor:not-allowed; }
+
+  .btn-start    { background: var(--low);    color:#052e16; }
+  .btn-stop     { background: var(--high);   color:#fff; }
+  .btn-gemini   { background: var(--surface2); color:var(--accent); border:1px solid var(--border); }
+  .btn-gemini:hover { background:#263548; }
+
+  /* Identity banner */
+  #identityBanner {
+    margin-top: 10px;
+    padding: 9px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    display: none;
+    align-items: center;
+    gap: 8px;
+    transition: all .3s;
+  }
+  .banner-admin   { background:#0c1f35; border:1px solid var(--admin);  color:var(--admin);  display:flex!important; }
+  .banner-unknown { background:#2d0a0a; border:1px solid var(--high);   color:var(--high);   display:flex!important; }
+
+  /* ── Right column ─────────────────────────────────────────── */
+  .right-col {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .card-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+
+  /* Threat level card */
+  #threatCard {
+    transition: border-color .3s, background .3s;
+  }
+  .threat-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  #threatBadge {
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: .1em;
+    padding: 4px 14px;
+    border-radius: 6px;
+    transition: all .3s;
+  }
+  .tl-low    { color:var(--low);    background:#052e16; border:1px solid var(--low);    }
+  .tl-medium { color:var(--medium); background:#2d1406; border:1px solid var(--medium); }
+  .tl-high   { color:var(--high);   background:#3b0a0a; border:1px solid var(--high);   animation:flash-border .5s infinite alternate; }
+
+  @keyframes flash-border {
+    from { border-color:var(--high); }
+    to   { border-color:transparent; }
+  }
+
+  #threatObjects {
+    font-size: 11px;
+    color: var(--high);
+    margin-top: 6px;
+    min-height: 14px;
+  }
+
+  /* Detections list */
+  #detectionList {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  #detectionList::-webkit-scrollbar { width:4px; }
+  #detectionList::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+
+  .det-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 9px;
+    border-radius: 6px;
+    background: var(--surface2);
+    gap: 6px;
+    font-size: 12px;
+  }
+  .det-label { display:flex; align-items:center; gap:6px; }
+  .det-icon  { font-size:14px; line-height:1; }
+  .det-conf  { color:var(--muted); font-size:11px; font-family:monospace; }
+  .det-threat { background:#3b0a0a!important; outline:1px solid var(--high); }
+  .det-admin  { background:#0c1f35!important; }
+
+  /* Gemini panel */
+  #geminiBox {
+    font-size: 12px;
+    line-height: 1.65;
+    color: #94a3b8;
+    min-height: 60px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #geminiModel {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 6px;
+    font-style: italic;
+  }
+  #geminiSpinner { display:none; }
+  .spinner {
+    width:16px; height:16px;
+    border:2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius:50%;
+    animation:spin .7s linear infinite;
+    display:inline-block;
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* ── Stats footer ─────────────────────────────────────────── */
+  footer {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    padding: 8px 20px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--muted);
+    flex-wrap: wrap;
+  }
+  .stat { display:flex; gap:5px; align-items:center; }
+  .stat-val { color:var(--text); font-weight:600; font-family:monospace; }
+
+  /* ── Weapon flash overlay ─────────────────────────────────── */
+  #weaponOverlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(239,68,68,.88);
+    z-index: 9999;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    animation: overlayIn .15s ease;
+  }
+  @keyframes overlayIn { from{opacity:0} to{opacity:1} }
+  #weaponOverlay .ov-icon { font-size: 72px; }
+  #weaponOverlay .ov-title {
+    font-size: 36px;
+    font-weight: 900;
+    color: #fff;
+    letter-spacing: .08em;
+    text-align: center;
+  }
+  #weaponOverlay .ov-sub { font-size: 15px; color:rgba(255,255,255,.8); }
+</style>
+</head>
+<body>
+
+<!-- ─── Weapon flash overlay ──────────────────────────────────────────────── -->
+<div id="weaponOverlay">
+  <div class="ov-icon">⚠️</div>
+  <div class="ov-title">WEAPON DETECTED</div>
+  <div class="ov-sub" id="weaponLabel">Threat object in camera feed</div>
+</div>
+
+<!-- ─── Header ───────────────────────────────────────────────────────────── -->
+<header>
+  <div class="header-left">
+    <div class="logo-dot"></div>
+    <h1>EDGE SECURITY</h1>
+  </div>
+
+  <div class="url-bar">
+    <span>API:</span>
+    <input id="urlInput" type="text" placeholder="http://127.0.0.1:8000" spellcheck="false"/>
+    <button id="urlSaveBtn" class="btn">Save</button>
+  </div>
+
+  <div id="connBadge" class="conn-badge conn-checking">
+    <div class="dot"></div>
+    <span id="connText">Checking</span>
+  </div>
+</header>
+
+<!-- ─── Main ─────────────────────────────────────────────────────────────── -->
+<main>
+
+  <!-- Left: camera -->
+  <div>
+    <div class="video-wrap">
+      <video id="video" autoplay muted playsinline></video>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div class="cam-controls">
+      <button id="startBtn" class="btn btn-start">▶ Start Camera</button>
+      <button id="stopBtn"  class="btn btn-stop"  disabled>■ Stop</button>
+      <button id="geminiBtn" class="btn btn-gemini" disabled>🔍 Ask Gemini AI</button>
+    </div>
+
+    <div id="identityBanner">
+      <span id="bannerIcon">👤</span>
+      <span id="bannerText">Unknown</span>
+    </div>
+  </div>
+
+  <!-- Right: panels -->
+  <div class="right-col">
+
+    <!-- Threat level -->
+    <div class="card" id="threatCard">
+      <div class="card-title">Threat Level</div>
+      <div class="threat-row">
+        <div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">Current status</div>
+          <div id="threatStatus" style="font-size:13px;color:var(--muted)">Camera offline</div>
+        </div>
+        <div id="threatBadge" class="tl-low">LOW</div>
+      </div>
+      <div id="threatObjects"></div>
+    </div>
+
+    <!-- Live detections -->
+    <div class="card" style="flex:1;">
+      <div class="card-title">Live Detections</div>
+      <ul id="detectionList">
+        <li style="color:var(--muted);font-size:12px;">No camera feed active.</li>
+      </ul>
+    </div>
+
+    <!-- Gemini AI -->
+    <div class="card">
+      <div class="card-title" style="display:flex;align-items:center;gap:8px;">
+        Gemini AI Analysis
+        <div id="geminiSpinner"><div class="spinner"></div></div>
+      </div>
+      <div id="geminiBox">Press "Ask Gemini AI" to analyse the current frame.</div>
+      <div id="geminiModel"></div>
+    </div>
+
+  </div>
+</main>
+
+<!-- ─── Stats footer ──────────────────────────────────────────────────────── -->
+<footer>
+  <div class="stat">Frames: <span class="stat-val" id="statFrames">0</span></div>
+  <div class="stat">FPS: <span class="stat-val" id="statFps">—</span></div>
+  <div class="stat">Alerts: <span class="stat-val" id="statAlerts">0</span></div>
+  <div class="stat">Uptime: <span class="stat-val" id="statUptime">00:00</span></div>
+  <div class="stat" style="margin-left:auto;">
+    Backend: <span class="stat-val" id="statBackend">—</span>
+  </div>
+</footer>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════════
+// Configuration
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Backend URL ──────────────────────────────────────────────────────────────
+// Update this to your Render / Koyeb / any cloud URL after deploying.
+// It is saved in localStorage so you only need to set it once per browser.
+let BACKEND_URL = localStorage.getItem('security_backend_url') || 'http://127.0.0.1:8000';
+
+const urlInput   = document.getElementById('urlInput');
+const urlSaveBtn = document.getElementById('urlSaveBtn');
+urlInput.value   = BACKEND_URL;
+
+urlSaveBtn.addEventListener('click', () => {
+  const v = urlInput.value.trim().replace(/\/$/, '');
+  if (v) {
+    BACKEND_URL = v;
+    localStorage.setItem('security_backend_url', v);
+    document.getElementById('statBackend').textContent = new URL(v).hostname;
+    checkBackendHealth();
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const video      = document.getElementById('video');
+const canvas     = document.getElementById('canvas');
+const ctx        = canvas.getContext('2d');
+const startBtn   = document.getElementById('startBtn');
+const stopBtn    = document.getElementById('stopBtn');
+const geminiBtn  = document.getElementById('geminiBtn');
+
+let stream          = null;
+let analysisTimer   = null;
+let isAnalysing     = false;
+let lastThreat      = 'LOW';
+let lastIdentity    = 'Unknown';
+let lastVoiceIdent  = '';
+let alertCount      = 0;
+let frameCount      = 0;
+let frameTimestamps = [];
+let startTime       = 0;
+let uptimeTimer     = null;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Backend health + keep-alive
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const connBadge  = document.getElementById('connBadge');
+const connText   = document.getElementById('connText');
+
+async function checkBackendHealth() {
+  setBadge('checking', 'Checking…');
+  try {
+    const res = await fetch(`${BACKEND_URL}/health`, {
+      signal: AbortSignal.timeout(6000)
+    });
+    if (res.ok) {
+      setBadge('connected', 'Online');
+      document.getElementById('statBackend').textContent =
+        new URL(BACKEND_URL).hostname;
+      return true;
+    }
+  } catch (_) {}
+  setBadge('offline', 'Offline');
+  // Auto-retry in 8 s if camera is active
+  if (stream) setTimeout(checkBackendHealth, 8000);
+  return false;
+}
+
+function setBadge(state, label) {
+  connBadge.className = `conn-badge conn-${state}`;
+  connText.textContent = label;
+}
+
+// Keep backend awake — pings every 10 min (prevents Render/Koyeb free-tier spin-down)
+setInterval(() => {
+  fetch(`${BACKEND_URL}/health`, { signal: AbortSignal.timeout(5000) }).catch(() => {});
+}, 10 * 60 * 1000);
+
+// Initial health check on load
+checkBackendHealth();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Camera control
+// ═══════════════════════════════════════════════════════════════════════════════
+
+startBtn.addEventListener('click', async () => {
+  const healthy = await checkBackendHealth();
+  if (!healthy) {
+    speak('Backend is offline. Check the API URL and try again.');
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width:1280, height:720, facingMode:'user' }, audio:false
+    });
+    video.srcObject = stream;
+    startBtn.disabled = true;
+    stopBtn.disabled  = false;
+    geminiBtn.disabled = false;
+
+    startTime  = Date.now();
+    uptimeTimer = setInterval(updateUptime, 1000);
+
+    // Start analysis loop — every 900 ms
+    analysisTimer = setInterval(analyzeFrame, 900);
+  } catch (err) {
+    alert('Camera access denied: ' + err.message);
+  }
+});
+
+stopBtn.addEventListener('click', () => {
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  if (analysisTimer) { clearInterval(analysisTimer); analysisTimer = null; }
+  if (uptimeTimer)   { clearInterval(uptimeTimer);   uptimeTimer   = null; }
+  video.srcObject = null;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  startBtn.disabled  = false;
+  stopBtn.disabled   = true;
+  geminiBtn.disabled = true;
+  setThreat('LOW');
+  setDetectionList([]);
+  setIdentityBanner('Unknown');
+  document.getElementById('threatStatus').textContent = 'Camera offline';
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Frame capture helper
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function captureBlob(quality = 0.75) {
+  return new Promise(resolve => {
+    canvas.width  = video.videoWidth  || 640;
+    canvas.height = video.videoHeight || 480;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(resolve, 'image/jpeg', quality);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Main analysis loop
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function analyzeFrame() {
+  if (isAnalysing || !stream) return;
+  isAnalysing = true;
+
+  try {
+    const blob = await captureBlob(0.75);
+    const fd   = new FormData();
+    fd.append('file', blob, 'frame.jpg');
+
+    const res  = await fetch(`${BACKEND_URL}/api/analyze`, {
+      method: 'POST', body: fd,
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const data = await res.json();
+
+    // ── Update frame counter + FPS ──
+    frameCount++;
+    const now = Date.now();
+    frameTimestamps.push(now);
+    frameTimestamps = frameTimestamps.filter(t => now - t < 5000);
+    document.getElementById('statFrames').textContent = frameCount;
+    document.getElementById('statFps').textContent =
+      (frameTimestamps.length / 5).toFixed(1);
+
+    // ── Threat level ─────────────────────────────────────────
+    setThreat(data.threat_level || 'LOW', data.threat_objects || []);
+
+    // ── Identity banner ──────────────────────────────────────
+    setIdentityBanner(data.identity || 'Unknown');
+
+    // ── Draw bounding boxes ──────────────────────────────────
+    // Re-draw frame first (canvas was used for capture, not for display)
+    // Only draw boxes — video element shows the live feed under the canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    (data.objects || []).forEach(obj => drawBox(obj));
+
+    // ── Detections list ──────────────────────────────────────
+    setDetectionList(data.objects || []);
+
+    // ── Alert logic ──────────────────────────────────────────
+    if (data.threat_level === 'HIGH') {
+      triggerWeaponOverlay(data.threat_objects);
+      alertCount++;
+      document.getElementById('statAlerts').textContent = alertCount;
+    } else if (data.threat_level === 'MEDIUM') {
+      alertCount++;
+      document.getElementById('statAlerts').textContent = alertCount;
+    }
+
+    // Connection badge
+    setBadge('connected', 'Online');
+
+  } catch (err) {
+    console.warn('[analyze]', err.message);
+    setBadge('offline', 'Retrying…');
+    setTimeout(checkBackendHealth, 3000);
+  } finally {
+    isAnalysing = false;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UI helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Threat level ─────────────────────────────────────────────────────────────
+const THREAT_CONFIG = {
+  LOW:    { cls:'tl-low',    status:'All clear — no threats detected.',   color:'var(--low)' },
+  MEDIUM: { cls:'tl-medium', status:'Caution — unknown person detected.', color:'var(--medium)' },
+  HIGH:   { cls:'tl-high',   status:'DANGER — weapon or high threat!',    color:'var(--high)' },
+};
+
+function setThreat(level, threatObjects = []) {
+  const cfg = THREAT_CONFIG[level] || THREAT_CONFIG.LOW;
+  const badge  = document.getElementById('threatBadge');
+  const status = document.getElementById('threatStatus');
+  const objs   = document.getElementById('threatObjects');
+
+  badge.className = cfg.cls;
+  badge.textContent = level;
+  status.textContent = cfg.status;
+  status.style.color = cfg.color;
+  objs.textContent = threatObjects.length
+    ? '⚠ Flagged: ' + threatObjects.join(', ')
+    : '';
+
+  // Voice alert on threat escalation
+  if (level !== lastThreat) {
+    if (level === 'HIGH')   speak('Warning! Weapon or high threat detected!');
+    if (level === 'MEDIUM') speak('Caution. Unknown person detected.');
+    if (level === 'LOW' && lastThreat !== 'LOW') speak('Threat cleared. All clear.');
+    lastThreat = level;
+  }
+}
+
+// ── Identity banner ───────────────────────────────────────────────────────────
+function setIdentityBanner(identity) {
+  const banner = document.getElementById('identityBanner');
+  const icon   = document.getElementById('bannerIcon');
+  const text   = document.getElementById('bannerText');
+  const isAdmin = identity !== 'Unknown';
+
+  banner.className = isAdmin ? 'banner-admin' : 'banner-unknown';
+  banner.style.display = 'flex';
+
+  if (isAdmin) {
+    const name = identity.replace(/_(admin|Admin)$/i, '').replace(/_/g, ' ');
+    icon.textContent = '✅';
+    text.textContent = `Welcome back, ${name}`;
+    if (identity !== lastVoiceIdent) {
+      speak(`Welcome back, ${name}`);
+      lastVoiceIdent = identity;
+    }
+  } else {
+    icon.textContent = '⛔';
+    text.textContent = 'Unknown person in frame';
+    lastVoiceIdent = '';
+  }
+
+  lastIdentity = identity;
+}
+
+// ── Bounding box drawing ──────────────────────────────────────────────────────
+const LABEL_COLORS = {
+  admin:   '#38bdf8',
+  unknown: '#ef4444',
+  threat:  '#ef4444',
+  default: '#22c55e',
+};
+
+function drawBox({ label, box, threat }) {
+  const [x, y, w, h] = box;
+  const isAdmin   = label.startsWith('Admin:');
+  const isUnknown = label === 'Unknown Human';
+
+  const color = threat    ? LABEL_COLORS.threat
+              : isAdmin   ? LABEL_COLORS.admin
+              : isUnknown ? LABEL_COLORS.unknown
+              :             LABEL_COLORS.default;
+
+  // Box
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 2.5;
+  ctx.strokeRect(x, y, w, h);
+
+  // Label background
+  ctx.font = 'bold 12px "Segoe UI", system-ui';
+  const textW = ctx.measureText(label).width;
+  ctx.fillStyle = color;
+  ctx.fillRect(x - 1, y - 22, textW + 12, 20);
+
+  // Label text
+  ctx.fillStyle = threat || isUnknown ? '#fff' : '#000';
+  ctx.fillText(label, x + 5, y - 7);
+
+  // Threat pulse ring
+  if (threat) {
+    ctx.strokeStyle = 'rgba(239,68,68,0.4)';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(x - 4, y - 4, w + 8, h + 8);
+  }
+}
+
+// ── Detection list ────────────────────────────────────────────────────────────
+const LABEL_ICONS = {
+  'person': '🧍', 'car': '🚗', 'truck': '🚚', 'motorcycle': '🏍',
+  'knife': '🔪', 'scissors': '✂️', 'baseball bat': '⚾',
+  'cell phone': '📱', 'laptop': '💻', 'backpack': '🎒',
+  'bottle': '🍶', 'chair': '🪑', 'dog': '🐕', 'cat': '🐈',
+};
+
+function setDetectionList(objects) {
+  const ul = document.getElementById('detectionList');
+  if (!objects.length) {
+    ul.innerHTML = '<li style="color:var(--muted);font-size:12px;padding:4px">Nothing detected this frame.</li>';
+    return;
+  }
+  ul.innerHTML = objects.map(obj => {
+    const isAdmin   = obj.label.startsWith('Admin:');
+    const isThreat  = obj.threat;
+    const cls       = isThreat ? 'det-item det-threat' : isAdmin ? 'det-item det-admin' : 'det-item';
+    const baseLabel = obj.label.replace('Admin: ', '').replace('Unknown Human', 'person');
+    const icon      = LABEL_ICONS[baseLabel] || (isThreat ? '⚠️' : '📦');
+    const conf      = obj.conf !== undefined ? (obj.conf * 100).toFixed(0) + '%' : '';
+    const badge     = isThreat ? ' ⚠' : isAdmin ? ' ✓' : '';
+    return `<li class="${cls}">
+      <div class="det-label">
+        <span class="det-icon">${icon}</span>
+        <span>${obj.label}${badge}</span>
+      </div>
+      <span class="det-conf">${conf}</span>
+    </li>`;
+  }).join('');
+}
+
+// ── Weapon flash overlay ──────────────────────────────────────────────────────
+let overlayTimer = null;
+function triggerWeaponOverlay(labels = []) {
+  const ov = document.getElementById('weaponOverlay');
+  const lb = document.getElementById('weaponLabel');
+  lb.textContent = labels.length ? `Detected: ${labels.join(', ')}` : 'High-threat object in camera feed';
+  ov.style.display = 'flex';
+  if (overlayTimer) clearTimeout(overlayTimer);
+  overlayTimer = setTimeout(() => { ov.style.display = 'none'; }, 2500);
+}
+
+// ── Uptime ────────────────────────────────────────────────────────────────────
+function updateUptime() {
+  const s   = Math.floor((Date.now() - startTime) / 1000);
+  const mm  = String(Math.floor(s / 60)).padStart(2, '0');
+  const ss  = String(s % 60).padStart(2, '0');
+  document.getElementById('statUptime').textContent = `${mm}:${ss}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Gemini AI
+// ═══════════════════════════════════════════════════════════════════════════════
+
+geminiBtn.addEventListener('click', async () => {
+  if (!stream) return;
+  geminiBtn.disabled = true;
+  document.getElementById('geminiSpinner').style.display = 'inline-block';
+  document.getElementById('geminiBox').textContent   = 'Analysing frame…';
+  document.getElementById('geminiModel').textContent = '';
+
+  try {
+    const blob = await captureBlob(0.85);
+    const fd   = new FormData();
+    fd.append('file', blob, 'frame.jpg');
+
+    const res  = await fetch(`${BACKEND_URL}/api/gemini`, {
+      method: 'POST', body: fd,
+      signal: AbortSignal.timeout(30000),
+    });
+    const data = await res.json();
+    document.getElementById('geminiBox').textContent = data.response || 'No response.';
+    document.getElementById('geminiModel').textContent = data.model_used
+      ? `via ${data.model_used}` : '';
+  } catch (err) {
+    document.getElementById('geminiBox').textContent = 'Request failed: ' + err.message;
+  } finally {
+    geminiBtn.disabled = false;
+    document.getElementById('geminiSpinner').style.display = 'none';
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Speech
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let speechQueue = [];
+let isSpeaking  = false;
+
+function speak(text) {
+  if (!window.speechSynthesis) return;
+  speechQueue.push(text);
+  if (!isSpeaking) drainQueue();
+}
+
+function drainQueue() {
+  if (!speechQueue.length) { isSpeaking = false; return; }
+  isSpeaking = true;
+  const utt = new SpeechSynthesisUtterance(speechQueue.shift());
+  utt.rate   = 1.05;
+  utt.volume = 1;
+  utt.onend  = drainQueue;
+  window.speechSynthesis.speak(utt);
+}
+</script>
+</body>
+</html>

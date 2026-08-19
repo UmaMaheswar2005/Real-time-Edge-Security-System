@@ -1,24 +1,30 @@
-# Secret keys
-backend/.env
+# Secrets & Environments
 .env
-
-# Python junk & caches
 __pycache__/
-*.py[cod]
-.DS_Store
-.Python
-
-# Virtual environments
+*.pyc
 venv/
-env/
+.venv/
 
-# Model Weights
+# AI Models & Weights (Heavy files)
 *.pt
+*.onnx
+*.pkl
+yolov8n.pt
+yolov8s-world.pt
 
-# Runtime outputs, logs, and capture folders
+# User Datasets & Dynamic Logs
+old_code/backend/dataset/
+surveillance_logs/
 intruders/
-backend/surveillance_logs/
 project_logs.csv
+*.jpg
+*.png
+*.jpeg
 
-# Large generated exports
-repomix-output.xml
+# Old Code
+old_code/
+
+# OS & Editor Files
+.DS_Store
+.vscode/
+.idea/
