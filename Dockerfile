@@ -1,9 +1,18 @@
-# ── Stage 1: Export YOLOv8n to ONNX (torch discarded after this stage) ────────
+# ── Stage 1: Export YOLOv8n to ONNX ──────────────────────────────────────────
 FROM python:3.12-slim AS model-builder
 
 WORKDIR /export
 
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# libxcb and friends are needed by opencv-python that ultralytics pulls in
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    libxcb1 \
+    libx11-6 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir torch torchvision \
+    --index-url https://download.pytorch.org/whl/cpu
 
 RUN pip install --no-cache-dir ultralytics
 
@@ -11,7 +20,7 @@ COPY export_onnx.py .
 
 RUN python export_onnx.py
 
-# ── Stage 2: Lean runtime (no torch, no TF, ~470 MB RAM) ─────────────────────
+# ── Stage 2: Lean runtime (no torch, no TF) ───────────────────────────────────
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -20,7 +29,10 @@ ENV HOME=/root
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 
