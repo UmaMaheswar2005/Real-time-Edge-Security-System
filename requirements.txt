@@ -1,18 +1,18 @@
-# ── Web Framework ─────────────────────────────────────────────────────────────
+# ── Web framework ──────────────────────────────────────────────────────────────
 fastapi
 uvicorn[standard]
 python-multipart
 python-dotenv
 
-# ── Cloud Services ─────────────────────────────────────────────────────────────
+# ── Cloud services ─────────────────────────────────────────────────────────────
 google-genai
 cloudinary
 
-# ── AI / Vision (ONNX-only — no torch, no TensorFlow) ─────────────────────────
-insightface          # ArcFace face recognition via ONNX Runtime
-onnxruntime          # Shared CPU inference engine for YOLO + InsightFace
+# ── AI / Vision  (ONNX only — zero torch, zero TensorFlow) ────────────────────
+insightface
+onnxruntime
 
-# ── Image Processing ───────────────────────────────────────────────────────────
+# ── Image processing ───────────────────────────────────────────────────────────
 opencv-python-headless==4.10.0.84
 numpy
 Pillow
