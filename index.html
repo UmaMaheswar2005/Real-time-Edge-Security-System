@@ -556,16 +556,18 @@ startBtn.addEventListener('click', async () => {
     // response arrives — preventing request pile-up and camera stutter.
     cameraActive = true;
     scheduleNextFrame();
+    startRenderLoop();  // keeps bounding boxes smooth between AI responses
   } catch (err) {
     alert('Camera access denied: ' + err.message);
   }
 });
 
 stopBtn.addEventListener('click', () => {
-  cameraActive = false;  // breaks the recursive setTimeout loop
+  cameraActive = false;  // breaks the recursive setTimeout loop and rAF loop
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   if (analysisTimer) { clearTimeout(analysisTimer); analysisTimer = null; }
   if (uptimeTimer)   { clearInterval(uptimeTimer);  uptimeTimer   = null; }
+  lastBoxes = [];  // clear any lingering boxes
   video.srcObject = null;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   startBtn.disabled  = false;
@@ -598,17 +600,23 @@ function captureBlob(quality = 0.75) {
 // Recursive analysis loop — next frame fires only after previous response
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Frame counter for decimation — only send every Nth frame to backend.
+// The video feed itself runs at full browser speed (requestAnimationFrame).
+// Backend only receives frames when it's free (recursive setTimeout ensures
+// no queue buildup). This gives smooth video with async AI analysis overlay.
+let _frameDecimator = 0;
+
 function scheduleNextFrame() {
   if (!cameraActive) return;
-  // 300 ms gap between frames gives ~2-3 FPS of analysis while keeping
-  // the backend responsive. Increase to 500 if you see lag on slow connections.
-  analysisTimer = setTimeout(runAnalysis, 300);
+  // Fire next analysis immediately after the previous one finishes.
+  // The backend is the bottleneck (2-4s per frame on CPU), not the frontend.
+  analysisTimer = setTimeout(runAnalysis, 50);
 }
 
 async function runAnalysis() {
   if (!cameraActive || !stream) return;
   await analyzeFrame();
-  scheduleNextFrame();  // only schedule next AFTER this one finishes
+  scheduleNextFrame();
 }
 
 async function analyzeFrame() {
@@ -643,11 +651,10 @@ async function analyzeFrame() {
     // ── Identity banner ───────────────────────────────────────
     setIdentityBanner(data.identity || 'Unknown');
 
-    // ── Bounding boxes on display canvas ─────────────────────
-    // Display canvas is transparent except for box overlays.
-    // The live video plays underneath it uninterrupted.
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    (data.objects || []).forEach(obj => drawBox(obj));
+    // ── Bounding boxes — store for render loop ───────────────
+    // The rAF render loop picks up lastBoxes and redraws every frame,
+    // so boxes stay visible smoothly between AI responses.
+    lastBoxes = data.objects || [];
 
     // ── Detections list ───────────────────────────────────────
     setDetectionList(data.objects || []);
@@ -857,6 +864,23 @@ geminiBtn.addEventListener('click', async () => {
     document.getElementById('geminiSpinner').style.display = 'none';
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Smooth render loop — redraws bounding boxes every animation frame
+// so overlays stay visible and crisp while waiting for the next AI response
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let lastBoxes = [];  // most recent set of detected objects from backend
+
+function startRenderLoop() {
+  function renderFrame() {
+    if (!cameraActive) return;  // stop when camera is stopped
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    lastBoxes.forEach(obj => drawBox(obj));
+    requestAnimationFrame(renderFrame);
+  }
+  requestAnimationFrame(renderFrame);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Speech

@@ -316,17 +316,31 @@ def build_face_db() -> None:
 
     print(f"[FaceDB] Listing photos in Cloudinary '{CDN_ADMIN_ROOT}/'...")
 
+    resources = []
     try:
-        result    = cloudinary.api.resources(
+        # Primary method: resources() with folder param
+        result = cloudinary.api.resources(
             type="upload",
-            prefix=CDN_ADMIN_ROOT + "/",
-            max_results=500,         # increase if you have > 500 admin photos total
+            folder=CDN_ADMIN_ROOT,
+            max_results=500,
         )
         resources = result.get("resources", [])
-    except Exception as exc:
-        print(f"[FaceDB] Cloudinary API error: {exc}")
-        print("[FaceDB] Check CLOUDINARY_* environment variables in Render dashboard.")
-        return
+        print(f"[FaceDB] resources(folder=) returned {len(resources)} items.")
+    except Exception as e1:
+        print(f"[FaceDB] resources(folder=) failed: {e1}")
+        try:
+            # Fallback: use prefix
+            result = cloudinary.api.resources(
+                type="upload",
+                prefix=CDN_ADMIN_ROOT + "/",
+                max_results=500,
+            )
+            resources = result.get("resources", [])
+            print(f"[FaceDB] resources(prefix=) returned {len(resources)} items.")
+        except Exception as e2:
+            print(f"[FaceDB] All Cloudinary listing methods failed: {e2}")
+            print("[FaceDB] Check CLOUDINARY_* env vars in Render dashboard.")
+            return
 
     if not resources:
         print(f"[FaceDB] No photos found under Cloudinary '{CDN_ADMIN_ROOT}/'.")
@@ -473,6 +487,43 @@ def cdn_upload(frame: np.ndarray, folder: str, public_id: str, quality: int = 80
 # App lifespan — model loading happens once at startup
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+
+def _probe_gemini_model() -> str | None:
+    """
+    At startup, find which Gemini model name actually works for this API key.
+    Sends a tiny 1-token probe to each candidate — the first that succeeds
+    is cached and reused for all subsequent /api/gemini requests.
+
+    The google-genai SDK talks to v1beta by default. Model names returned by
+    models.list() include a "models/" prefix AND may point to deprecated
+    endpoints. This probe uses the exact same call path as ask_gemini so
+    there are no surprises at request time.
+    """
+    # Candidates in preference order — adjust if Google releases newer versions
+    candidates = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-preview-05-20",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+    ]
+    probe_image = Image.new("RGB", (8, 8), color=(128, 128, 128))
+    for name in candidates:
+        try:
+            resp = gemini_client.models.generate_content(
+                model=name,
+                contents=["Reply with one word: ok", probe_image],
+            )
+            if resp and resp.text:
+                print(f"[Gemini] Working model: '{name}'")
+                return name
+        except Exception as exc:
+            print(f"[Gemini] Probe '{name}' failed: {exc}")
+    print("[Gemini] WARNING: No working Gemini model found. Check API key and quota.")
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -528,7 +579,12 @@ async def lifespan(app: FastAPI):
         print(f"[FaceApp] Failed to load InsightFace: {exc}")
         print("[FaceApp] Face recognition DISABLED.")
 
-    # ── 5. Release build-time allocations before serving requests ─────────────
+    # ── 5. Probe Gemini to find working model name at startup ────────────────
+    global _working_gemini_model
+    if gemini_client:
+        _working_gemini_model = _probe_gemini_model()
+
+    # ── 6. Release build-time allocations before serving requests ─────────────
     gc.collect()
     print("[App] Startup complete — serving requests.")
 
@@ -543,6 +599,10 @@ async def lifespan(app: FastAPI):
 
 _api_key      = os.getenv("GEMINI_API_KEY")
 gemini_client = genai.Client(api_key=_api_key) if _api_key else None
+
+# Pre-resolved model name — avoids calling models.list() on every request.
+# Populated at startup in lifespan once we confirm which model works.
+_working_gemini_model: str | None = None
 
 app = FastAPI(title="Edge Security API v2", version="2.0.0", lifespan=lifespan)
 
@@ -590,33 +650,40 @@ def debug_cloudinary():
     Open this in your browser if known_identities is empty.
     Tells you whether credentials are wrong, folder is empty, or path is mismatched.
     """
+    results_by_method = {}
+    resources = []
+
+    # Try folder method
     try:
-        result    = cloudinary.api.resources(
-            type="upload",
-            prefix=CDN_ADMIN_ROOT + "/",
-            max_results=50,
-        )
-        resources = result.get("resources", [])
-        # Show the raw public_ids so you can see the exact folder structure
-        return {
-            "status":        "ok",
-            "total_found":   len(resources),
-            "public_ids":    [r["public_id"] for r in resources],
-            "admin_db_keys": list(admin_db.keys()),
-            "cdn_admin_root": CDN_ADMIN_ROOT,
-            "hint": (
-                "If public_ids is empty, upload photos to Cloudinary under "
-                f"'{CDN_ADMIN_ROOT}/<Your_Name>/photo.jpg'. "
-                "If public_ids has entries but admin_db_keys is empty, "
-                "the photos don't contain detectable faces — check photo quality."
-            ),
-        }
-    except Exception as exc:
-        return {
-            "status":  "error",
-            "message": str(exc),
-            "hint":    "Check CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET in Render env vars.",
-        }
+        r = cloudinary.api.resources(type="upload", folder=CDN_ADMIN_ROOT, max_results=50)
+        results_by_method["folder"] = [x["public_id"] for x in r.get("resources", [])]
+        resources = r.get("resources", [])
+    except Exception as e:
+        results_by_method["folder"] = f"ERROR: {e}"
+
+    # Try prefix method
+    try:
+        r2 = cloudinary.api.resources(type="upload", prefix=CDN_ADMIN_ROOT + "/", max_results=50)
+        results_by_method["prefix"] = [x["public_id"] for x in r2.get("resources", [])]
+        if not resources:
+            resources = r2.get("resources", [])
+    except Exception as e:
+        results_by_method["prefix"] = f"ERROR: {e}"
+
+    return {
+        "status":             "ok",
+        "cdn_admin_root":     CDN_ADMIN_ROOT,
+        "admin_db_keys":      list(admin_db.keys()),
+        "results_by_method":  results_by_method,
+        "total_found":        len(resources),
+        "public_ids":         [r["public_id"] for r in resources],
+        "hint": (
+            "If both methods return empty, check that your Cloudinary folder is "
+            f"named exactly '{CDN_ADMIN_ROOT}' and photos are inside a sub-folder. "
+            "If you see public_ids but admin_db_keys is empty, faces were not "
+            "detected in the photos — use clear front-facing photos."
+        ),
+    }
 
 
 @app.post("/api/reload-faces")
@@ -768,67 +835,39 @@ async def analyze_frame(background_tasks: BackgroundTasks, file: UploadFile = Fi
 @app.post("/api/gemini")
 def ask_gemini(file: UploadFile = File(...)):
     """
-    On-demand Gemini AI analysis endpoint — called when the user clicks
-    "Ask Gemini AI" in the frontend.
+    On-demand Gemini AI analysis endpoint — sync so FastAPI runs it in a
+    thread pool, keeping the event loop free during the 5-15s Gemini call.
 
-    This is intentionally a synchronous (non-async) endpoint. FastAPI
-    automatically runs sync endpoints in a thread pool, keeping the main
-    event loop free during the Gemini network call (which can take 5-10 s).
-    Making it async would block the event loop and cause health check
-    timeouts, making Render think the service is offline.
-
-    Model selection: first tries to dynamically list models available to
-    your specific API key (avoids 404s from deprecated model names), then
-    falls back to the hardcoded GEMINI_MODELS list if the listing fails.
-
-    Returns:
-        {
-            "response":   str,        # Gemini's analysis text
-            "model_used": str | None, # which model succeeded, or None on failure
-        }
+    Uses _working_gemini_model probed at startup — no per-request model
+    discovery, no deprecated name issues, no models/ prefix confusion.
     """
     if not gemini_client:
         return {"response": "Gemini API key not configured.", "model_used": None}
 
-    # Sync file read — required because this endpoint is no longer async
+    if not _working_gemini_model:
+        return {
+            "response": (
+                "No working Gemini model found. Check your GEMINI_API_KEY "
+                "in Render environment variables and verify the key has "
+                "access to Gemini Flash models at aistudio.google.com."
+            ),
+            "model_used": None,
+        }
+
     raw     = file.file.read()
     pil_img = Image.open(io.BytesIO(raw)).convert("RGB")
 
-    # Dynamically discover which flash models are available to this API key.
-    # This prevents 404 errors caused by Google deprecating model names over time.
-    # NOTE: the API returns names as "models/gemini-2.5-flash" — we must strip
-    # the "models/" prefix before passing to generate_content, otherwise every
-    # call fails with a 404.
-    # Falls back to the hardcoded GEMINI_MODELS list if the listing API fails.
     try:
-        active_models = []
-        for m in gemini_client.models.list():
-            supports = getattr(m, "supported_generation_methods", [])
-            if "generateContent" in supports and "flash" in m.name:
-                # Strip the "models/" prefix that the list API includes
-                clean_name = m.name.replace("models/", "")
-                active_models.append(clean_name)
-        if not active_models:
-            raise ValueError("No flash models returned by listing API")
-        print(f"[Gemini] Available flash models: {active_models}")
+        resp = gemini_client.models.generate_content(
+            model=_working_gemini_model,
+            contents=[SECURITY_PROMPT, pil_img],
+        )
+        if resp and resp.text:
+            return {"response": resp.text.strip(), "model_used": _working_gemini_model}
+        return {"response": "Empty response from Gemini.", "model_used": _working_gemini_model}
     except Exception as exc:
-        print(f"[Gemini] Model listing failed ({exc}) — using fallback list.")
-        active_models = GEMINI_MODELS
-
-    last_err = None
-    for model_name in active_models:
-        try:
-            resp = gemini_client.models.generate_content(
-                model=model_name,
-                contents=[SECURITY_PROMPT, pil_img],
-            )
-            if resp and resp.text:
-                return {"response": resp.text.strip(), "model_used": model_name}
-        except Exception as exc:
-            print(f"[Gemini] '{model_name}' failed: {exc}")
-            last_err = exc
-
-    return {
-        "response":   f"All Gemini models unavailable. Last error: {last_err}",
-        "model_used": None,
-    }
+        print(f"[Gemini] generate_content failed: {exc}")
+        return {
+            "response":   f"Gemini request failed: {exc}",
+            "model_used": None,
+        }
