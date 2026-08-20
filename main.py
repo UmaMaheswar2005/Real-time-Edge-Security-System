@@ -59,7 +59,7 @@ import numpy as np
 from contextlib import asynccontextmanager
 from PIL import Image
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from google import genai
@@ -580,7 +580,7 @@ def health():
 
 
 @app.post("/api/analyze")
-async def analyze_frame(file: UploadFile = File(...)):
+async def analyze_frame(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """
     Main analysis endpoint — called by the frontend every ~900 ms with
     a JPEG frame captured from the webcam.
@@ -592,8 +592,11 @@ async def analyze_frame(file: UploadFile = File(...)):
         4. Apply identity grace period to prevent label flickering
         5. Map each YOLO person box to its face identity
         6. Compute threat level: LOW / MEDIUM / HIGH
-        7. Upload to Cloudinary (routine heartbeat + alert snapshots)
-        8. Return structured JSON to the frontend
+        7. Schedule Cloudinary uploads as background tasks (non-blocking)
+        8. Return structured JSON to the frontend immediately
+
+    Cloudinary uploads are offloaded to background threads via BackgroundTasks
+    so they never block the event loop or freeze the camera feed.
 
     Returns:
         {
@@ -673,14 +676,17 @@ async def analyze_frame(file: UploadFile = File(...)):
         threat_level = "LOW"      # only known admins or no people
 
     # ── Step 5: Cloudinary DVR uploads ────────────────────────────────────────
+    # Both uploads are scheduled as background tasks so they run AFTER the
+    # response is already sent to the frontend. This means the camera feed
+    # never freezes waiting for a Cloudinary network call to finish.
 
     # 5-A: Routine heartbeat — one frame every SNAPSHOT_INTERVAL seconds
     if now - _last_snapshot >= SNAPSHOT_INTERVAL:
-        cdn_upload(frame, CDN_ROUTINE, f"frame_{int(now)}", quality=70)
+        background_tasks.add_task(cdn_upload, frame, CDN_ROUTINE, f"frame_{int(now)}", 70)
         _last_snapshot = now
 
     # 5-B: Alert snapshot — triggered by unknown intruder or weapon detection.
-    # ALERT_COOLDOWN prevents duplicate uploads for the same event.
+    # ALERT_COOLDOWN prevents duplicate uploads for the same ongoing event.
     if (unknown_intruder or threat_dets) and (now - _last_alert >= ALERT_COOLDOWN):
         alert_frame = frame.copy()
         # Red border for weapons, orange for unknown intruder
@@ -691,7 +697,7 @@ async def analyze_frame(file: UploadFile = File(...)):
                     cv2.FONT_HERSHEY_DUPLEX, 1.2, color, 2)
 
         folder = CDN_WEAPONS if threat_dets else CDN_ALERTS
-        cdn_upload(alert_frame, folder, f"alert_{int(now)}", quality=85)
+        background_tasks.add_task(cdn_upload, alert_frame, folder, f"alert_{int(now)}", 85)
         _last_alert = now
 
     return {
@@ -703,16 +709,20 @@ async def analyze_frame(file: UploadFile = File(...)):
 
 
 @app.post("/api/gemini")
-async def ask_gemini(file: UploadFile = File(...)):
+def ask_gemini(file: UploadFile = File(...)):
     """
     On-demand Gemini AI analysis endpoint — called when the user clicks
     "Ask Gemini AI" in the frontend.
 
-    Accepts a JPEG frame, sends it to the Gemini Vision API with a
-    security-focused prompt, and returns the text analysis.
+    This is intentionally a synchronous (non-async) endpoint. FastAPI
+    automatically runs sync endpoints in a thread pool, keeping the main
+    event loop free during the Gemini network call (which can take 5-10 s).
+    Making it async would block the event loop and cause health check
+    timeouts, making Render think the service is offline.
 
-    Tries each model in GEMINI_MODELS in order and falls back to the next
-    if the current one returns an error (e.g. quota exceeded).
+    Model selection: first tries to dynamically list models available to
+    your specific API key (avoids 404s from deprecated model names), then
+    falls back to the hardcoded GEMINI_MODELS list if the listing fails.
 
     Returns:
         {
@@ -723,11 +733,30 @@ async def ask_gemini(file: UploadFile = File(...)):
     if not gemini_client:
         return {"response": "Gemini API key not configured.", "model_used": None}
 
-    raw     = await file.read()
+    # Sync file read — required because this endpoint is no longer async
+    raw     = file.file.read()
     pil_img = Image.open(io.BytesIO(raw)).convert("RGB")
 
+    # Dynamically discover which flash models are available to this API key.
+    # This prevents 404 errors caused by Google deprecating model names over time.
+    # Falls back to the hardcoded GEMINI_MODELS list if the listing API fails.
+    try:
+        active_models = [
+            m.name
+            for m in gemini_client.models.list()
+            if hasattr(m, "supported_generation_methods")
+            and "generateContent" in m.supported_generation_methods
+            and "flash" in m.name
+        ]
+        if not active_models:
+            raise ValueError("No flash models returned by API")
+        print(f"[Gemini] Available flash models: {active_models}")
+    except Exception as exc:
+        print(f"[Gemini] Model listing failed ({exc}) — using fallback list.")
+        active_models = GEMINI_MODELS
+
     last_err = None
-    for model_name in GEMINI_MODELS:
+    for model_name in active_models:
         try:
             resp = gemini_client.models.generate_content(
                 model=model_name,
