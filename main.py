@@ -45,6 +45,7 @@ RAM budget (fits Render / Koyeb 512 MB free tier):
     Peak total                  ~ 470 MB  ✓
 """
 
+import asyncio
 import gc
 import io
 import os
@@ -518,7 +519,10 @@ async def lifespan(app: FastAPI):
         print("[FaceApp] InsightFace buffalo_sc loaded — face recognition ready.")
 
         # ── 4. Build face embedding database from Cloudinary photos ──────────
-        build_face_db()
+        # Run in a thread executor because build_face_db makes blocking
+        # network calls (Cloudinary API + photo downloads) that would
+        # stall the async event loop if called directly.
+        await asyncio.get_event_loop().run_in_executor(None, build_face_db)
 
     except Exception as exc:
         print(f"[FaceApp] Failed to load InsightFace: {exc}")
@@ -577,6 +581,59 @@ def health():
     free-tier service from spinning down due to inactivity.
     """
     return {"status": "ok"}
+
+
+@app.get("/api/debug-cloudinary")
+def debug_cloudinary():
+    """
+    Debug endpoint — shows exactly what Cloudinary returns for the admin_dataset folder.
+    Open this in your browser if known_identities is empty.
+    Tells you whether credentials are wrong, folder is empty, or path is mismatched.
+    """
+    try:
+        result    = cloudinary.api.resources(
+            type="upload",
+            prefix=CDN_ADMIN_ROOT + "/",
+            max_results=50,
+        )
+        resources = result.get("resources", [])
+        # Show the raw public_ids so you can see the exact folder structure
+        return {
+            "status":        "ok",
+            "total_found":   len(resources),
+            "public_ids":    [r["public_id"] for r in resources],
+            "admin_db_keys": list(admin_db.keys()),
+            "cdn_admin_root": CDN_ADMIN_ROOT,
+            "hint": (
+                "If public_ids is empty, upload photos to Cloudinary under "
+                f"'{CDN_ADMIN_ROOT}/<Your_Name>/photo.jpg'. "
+                "If public_ids has entries but admin_db_keys is empty, "
+                "the photos don't contain detectable faces — check photo quality."
+            ),
+        }
+    except Exception as exc:
+        return {
+            "status":  "error",
+            "message": str(exc),
+            "hint":    "Check CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET in Render env vars.",
+        }
+
+
+@app.post("/api/reload-faces")
+async def reload_faces():
+    """
+    Force a rebuild of the face embedding database from Cloudinary.
+    Call this after uploading new admin photos without redeploying.
+    Example: POST https://your-app.onrender.com/api/reload-faces
+    """
+    global admin_db
+    admin_db = {}  # Clear existing database
+    await asyncio.get_event_loop().run_in_executor(None, build_face_db)
+    return {
+        "status":           "reloaded",
+        "known_identities": list(admin_db.keys()),
+        "total_embeddings": {k: len(v) for k, v in admin_db.items()},
+    }
 
 
 @app.post("/api/analyze")
@@ -739,17 +796,20 @@ def ask_gemini(file: UploadFile = File(...)):
 
     # Dynamically discover which flash models are available to this API key.
     # This prevents 404 errors caused by Google deprecating model names over time.
+    # NOTE: the API returns names as "models/gemini-2.5-flash" — we must strip
+    # the "models/" prefix before passing to generate_content, otherwise every
+    # call fails with a 404.
     # Falls back to the hardcoded GEMINI_MODELS list if the listing API fails.
     try:
-        active_models = [
-            m.name
-            for m in gemini_client.models.list()
-            if hasattr(m, "supported_generation_methods")
-            and "generateContent" in m.supported_generation_methods
-            and "flash" in m.name
-        ]
+        active_models = []
+        for m in gemini_client.models.list():
+            supports = getattr(m, "supported_generation_methods", [])
+            if "generateContent" in supports and "flash" in m.name:
+                # Strip the "models/" prefix that the list API includes
+                clean_name = m.name.replace("models/", "")
+                active_models.append(clean_name)
         if not active_models:
-            raise ValueError("No flash models returned by API")
+            raise ValueError("No flash models returned by listing API")
         print(f"[Gemini] Available flash models: {active_models}")
     except Exception as exc:
         print(f"[Gemini] Model listing failed ({exc}) — using fallback list.")

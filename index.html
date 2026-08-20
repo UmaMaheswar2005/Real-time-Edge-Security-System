@@ -472,8 +472,9 @@ const stopBtn    = document.getElementById('stopBtn');
 const geminiBtn  = document.getElementById('geminiBtn');
 
 let stream          = null;
-let analysisTimer   = null;
+let analysisTimer   = null;   // holds the setTimeout reference
 let isAnalysing     = false;
+let cameraActive    = false;  // set false on stop to break the recursive loop
 let lastThreat      = 'LOW';
 let lastIdentity    = 'Unknown';
 let lastVoiceIdent  = '';
@@ -482,6 +483,12 @@ let frameCount      = 0;
 let frameTimestamps = [];
 let startTime       = 0;
 let uptimeTimer     = null;
+
+// Offscreen canvas used ONLY for JPEG capture — never displayed.
+// Keeps the display canvas free for bounding boxes only, so the live
+// video feed never appears frozen between frames.
+const offscreen    = document.createElement('canvas');
+const offscreenCtx = offscreen.getContext('2d');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Backend health + keep-alive
@@ -541,20 +548,24 @@ startBtn.addEventListener('click', async () => {
     stopBtn.disabled  = false;
     geminiBtn.disabled = false;
 
-    startTime  = Date.now();
+    startTime   = Date.now();
     uptimeTimer = setInterval(updateUptime, 1000);
 
-    // Start analysis loop — every 900 ms
-    analysisTimer = setInterval(analyzeFrame, 900);
+    // Use recursive setTimeout instead of setInterval.
+    // This means the next frame is only scheduled AFTER the previous
+    // response arrives — preventing request pile-up and camera stutter.
+    cameraActive = true;
+    scheduleNextFrame();
   } catch (err) {
     alert('Camera access denied: ' + err.message);
   }
 });
 
 stopBtn.addEventListener('click', () => {
+  cameraActive = false;  // breaks the recursive setTimeout loop
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-  if (analysisTimer) { clearInterval(analysisTimer); analysisTimer = null; }
-  if (uptimeTimer)   { clearInterval(uptimeTimer);   uptimeTimer   = null; }
+  if (analysisTimer) { clearTimeout(analysisTimer); analysisTimer = null; }
+  if (uptimeTimer)   { clearInterval(uptimeTimer);  uptimeTimer   = null; }
   video.srcObject = null;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   startBtn.disabled  = false;
@@ -567,24 +578,41 @@ stopBtn.addEventListener('click', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Frame capture helper
+// Frame capture — uses offscreen canvas so display canvas never freezes
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function captureBlob(quality = 0.75) {
-  return new Promise(resolve => {
-    canvas.width  = video.videoWidth  || 640;
-    canvas.height = video.videoHeight || 480;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    canvas.toBlob(resolve, 'image/jpeg', quality);
-  });
+  // Draw video into the OFFSCREEN canvas (never shown to user)
+  offscreen.width  = video.videoWidth  || 640;
+  offscreen.height = video.videoHeight || 480;
+  offscreenCtx.drawImage(video, 0, 0, offscreen.width, offscreen.height);
+
+  // Sync display canvas dimensions without drawing the video onto it
+  canvas.width  = offscreen.width;
+  canvas.height = offscreen.height;
+
+  return new Promise(resolve => offscreen.toBlob(resolve, 'image/jpeg', quality));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Main analysis loop
+// Recursive analysis loop — next frame fires only after previous response
 // ═══════════════════════════════════════════════════════════════════════════════
 
+function scheduleNextFrame() {
+  if (!cameraActive) return;
+  // 300 ms gap between frames gives ~2-3 FPS of analysis while keeping
+  // the backend responsive. Increase to 500 if you see lag on slow connections.
+  analysisTimer = setTimeout(runAnalysis, 300);
+}
+
+async function runAnalysis() {
+  if (!cameraActive || !stream) return;
+  await analyzeFrame();
+  scheduleNextFrame();  // only schedule next AFTER this one finishes
+}
+
 async function analyzeFrame() {
-  if (isAnalysing || !stream) return;
+  if (isAnalysing) return;
   isAnalysing = true;
 
   try {
@@ -592,15 +620,15 @@ async function analyzeFrame() {
     const fd   = new FormData();
     fd.append('file', blob, 'frame.jpg');
 
-    const res  = await fetch(`${BACKEND_URL}/api/analyze`, {
+    const res = await fetch(`${BACKEND_URL}/api/analyze`, {
       method: 'POST', body: fd,
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(12000),  // 12s — enough for CPU inference
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const data = await res.json();
 
-    // ── Update frame counter + FPS ──
+    // ── Update frame counter + FPS ────────────────────────────
     frameCount++;
     const now = Date.now();
     frameTimestamps.push(now);
@@ -609,22 +637,22 @@ async function analyzeFrame() {
     document.getElementById('statFps').textContent =
       (frameTimestamps.length / 5).toFixed(1);
 
-    // ── Threat level ─────────────────────────────────────────
+    // ── Threat level ──────────────────────────────────────────
     setThreat(data.threat_level || 'LOW', data.threat_objects || []);
 
-    // ── Identity banner ──────────────────────────────────────
+    // ── Identity banner ───────────────────────────────────────
     setIdentityBanner(data.identity || 'Unknown');
 
-    // ── Draw bounding boxes ──────────────────────────────────
-    // Re-draw frame first (canvas was used for capture, not for display)
-    // Only draw boxes — video element shows the live feed under the canvas
+    // ── Bounding boxes on display canvas ─────────────────────
+    // Display canvas is transparent except for box overlays.
+    // The live video plays underneath it uninterrupted.
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     (data.objects || []).forEach(obj => drawBox(obj));
 
-    // ── Detections list ──────────────────────────────────────
+    // ── Detections list ───────────────────────────────────────
     setDetectionList(data.objects || []);
 
-    // ── Alert logic ──────────────────────────────────────────
+    // ── Alert logic ───────────────────────────────────────────
     if (data.threat_level === 'HIGH') {
       triggerWeaponOverlay(data.threat_objects);
       alertCount++;
@@ -634,7 +662,6 @@ async function analyzeFrame() {
       document.getElementById('statAlerts').textContent = alertCount;
     }
 
-    // Connection badge
     setBadge('connected', 'Online');
 
   } catch (err) {
@@ -817,7 +844,7 @@ geminiBtn.addEventListener('click', async () => {
 
     const res  = await fetch(`${BACKEND_URL}/api/gemini`, {
       method: 'POST', body: fd,
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(45000),  // 45s — Gemini can be slow on free tier
     });
     const data = await res.json();
     document.getElementById('geminiBox').textContent = data.response || 'No response.';
