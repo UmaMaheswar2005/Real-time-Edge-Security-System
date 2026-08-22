@@ -318,29 +318,27 @@ def build_face_db() -> None:
 
     resources = []
     try:
-        # Primary method: resources() with folder param
+        # Use prefix so we ONLY get items inside admin_dataset/ and its sub-folders.
+        # folder= param returns items at the root level of that folder only and
+        # can bleed into other folders on some account types. prefix= is strict.
         result = cloudinary.api.resources(
             type="upload",
-            folder=CDN_ADMIN_ROOT,
+            prefix=CDN_ADMIN_ROOT + "/",
             max_results=500,
         )
         resources = result.get("resources", [])
-        print(f"[FaceDB] resources(folder=) returned {len(resources)} items.")
-    except Exception as e1:
-        print(f"[FaceDB] resources(folder=) failed: {e1}")
-        try:
-            # Fallback: use prefix
-            result = cloudinary.api.resources(
-                type="upload",
-                prefix=CDN_ADMIN_ROOT + "/",
-                max_results=500,
-            )
-            resources = result.get("resources", [])
-            print(f"[FaceDB] resources(prefix=) returned {len(resources)} items.")
-        except Exception as e2:
-            print(f"[FaceDB] All Cloudinary listing methods failed: {e2}")
-            print("[FaceDB] Check CLOUDINARY_* env vars in Render dashboard.")
-            return
+        print(f"[FaceDB] Found {len(resources)} items under '{CDN_ADMIN_ROOT}/'.")
+        # Safety check: filter out any item whose public_id doesn't start with
+        # the expected prefix (defensive against SDK quirks)
+        resources = [
+            r for r in resources
+            if r.get("public_id", "").startswith(CDN_ADMIN_ROOT + "/")
+        ]
+        print(f"[FaceDB] {len(resources)} items after prefix safety filter.")
+    except Exception as exc:
+        print(f"[FaceDB] Cloudinary listing failed: {exc}")
+        print("[FaceDB] Check CLOUDINARY_* env vars in Render dashboard.")
+        return
 
     if not resources:
         print(f"[FaceDB] No photos found under Cloudinary '{CDN_ADMIN_ROOT}/'.")
@@ -500,13 +498,15 @@ def _probe_gemini_model() -> str | None:
     there are no surprises at request time.
     """
     # Candidates in preference order — adjust if Google releases newer versions
+    # Model names taken directly from Google's 404 error messages:
+    # "Please update your code to use models/gemini-3.6-flash"
+    # Strip the "models/" prefix — generate_content needs just the name.
     candidates = [
+        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
         "gemini-2.5-flash",
-        "gemini-2.5-flash-preview-05-20",
         "gemini-2.0-flash",
-        "gemini-2.0-flash-lite",
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
     ]
     probe_image = Image.new("RGB", (8, 8), color=(128, 128, 128))
     for name in candidates:
@@ -650,40 +650,40 @@ def debug_cloudinary():
     Open this in your browser if known_identities is empty.
     Tells you whether credentials are wrong, folder is empty, or path is mismatched.
     """
-    results_by_method = {}
-    resources = []
-
-    # Try folder method
     try:
-        r = cloudinary.api.resources(type="upload", folder=CDN_ADMIN_ROOT, max_results=50)
-        results_by_method["folder"] = [x["public_id"] for x in r.get("resources", [])]
-        resources = r.get("resources", [])
-    except Exception as e:
-        results_by_method["folder"] = f"ERROR: {e}"
+        result = cloudinary.api.resources(
+            type="upload",
+            prefix=CDN_ADMIN_ROOT + "/",
+            max_results=100,
+        )
+        resources = result.get("resources", [])
+        # Group by identity sub-folder for easier reading
+        by_identity = {}
+        for r in resources:
+            parts = r["public_id"].split("/")
+            identity = parts[1] if len(parts) >= 3 else "__root__"
+            by_identity.setdefault(identity, []).append(r["public_id"])
 
-    # Try prefix method
-    try:
-        r2 = cloudinary.api.resources(type="upload", prefix=CDN_ADMIN_ROOT + "/", max_results=50)
-        results_by_method["prefix"] = [x["public_id"] for x in r2.get("resources", [])]
-        if not resources:
-            resources = r2.get("resources", [])
-    except Exception as e:
-        results_by_method["prefix"] = f"ERROR: {e}"
-
-    return {
-        "status":             "ok",
-        "cdn_admin_root":     CDN_ADMIN_ROOT,
-        "admin_db_keys":      list(admin_db.keys()),
-        "results_by_method":  results_by_method,
-        "total_found":        len(resources),
-        "public_ids":         [r["public_id"] for r in resources],
-        "hint": (
-            "If both methods return empty, check that your Cloudinary folder is "
-            f"named exactly '{CDN_ADMIN_ROOT}' and photos are inside a sub-folder. "
-            "If you see public_ids but admin_db_keys is empty, faces were not "
-            "detected in the photos — use clear front-facing photos."
-        ),
-    }
+        return {
+            "status":           "ok",
+            "cdn_admin_root":   CDN_ADMIN_ROOT,
+            "total_found":      len(resources),
+            "by_identity":      {k: len(v) for k, v in by_identity.items()},
+            "public_ids":       [r["public_id"] for r in resources[:20]],
+            "admin_db_keys":    list(admin_db.keys()),
+            "gemini_model":     _working_gemini_model,
+            "hint": (
+                f"Photos must be at: {CDN_ADMIN_ROOT}/<YourName>/photo.jpg  "
+                "The folder directly under admin_dataset becomes the identity label. "
+                "If total_found is 0, create the folder structure in Cloudinary first."
+            ),
+        }
+    except Exception as exc:
+        return {
+            "status":  "error",
+            "message": str(exc),
+            "hint":    "Check CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET in Render env vars.",
+        }
 
 
 @app.post("/api/reload-faces")
