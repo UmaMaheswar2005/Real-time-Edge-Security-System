@@ -325,27 +325,65 @@ def build_face_db() -> None:
     print(f"[FaceDB] Listing photos in Cloudinary '{CDN_ADMIN_ROOT}/'...")
 
     resources = []
+
+    # Try every possible listing method and log all results for debugging
+    print(f"[FaceDB] === Cloudinary diagnostic ===")
+    print(f"[FaceDB] CDN_ADMIN_ROOT = '{CDN_ADMIN_ROOT}'")
+
+    # Method 1: prefix
     try:
-        # Use prefix so we ONLY get items inside admin_dataset/ and its sub-folders.
-        # folder= param returns items at the root level of that folder only and
-        # can bleed into other folders on some account types. prefix= is strict.
-        result = cloudinary.api.resources(
-            type="upload",
-            prefix=CDN_ADMIN_ROOT + "/",
-            max_results=500,
-        )
-        resources = result.get("resources", [])
-        print(f"[FaceDB] Found {len(resources)} items under '{CDN_ADMIN_ROOT}/'.")
-        # Safety check: filter out any item whose public_id doesn't start with
-        # the expected prefix (defensive against SDK quirks)
-        resources = [
-            r for r in resources
-            if r.get("public_id", "").startswith(CDN_ADMIN_ROOT + "/")
-        ]
-        print(f"[FaceDB] {len(resources)} items after prefix safety filter.")
-    except Exception as exc:
-        print(f"[FaceDB] Cloudinary listing failed: {exc}")
-        print("[FaceDB] Check CLOUDINARY_* env vars in Render dashboard.")
+        r1 = cloudinary.api.resources(type="upload", prefix=CDN_ADMIN_ROOT + "/", max_results=500)
+        items1 = r1.get("resources", [])
+        print(f"[FaceDB] Method1 prefix='{CDN_ADMIN_ROOT}/': {len(items1)} items")
+        for item in items1[:10]:
+            print(f"[FaceDB]   public_id: {item.get('public_id')}")
+        resources = items1
+    except Exception as e:
+        print(f"[FaceDB] Method1 failed: {e}")
+
+    # Method 2: prefix without trailing slash
+    if not resources:
+        try:
+            r2 = cloudinary.api.resources(type="upload", prefix=CDN_ADMIN_ROOT, max_results=500)
+            items2 = r2.get("resources", [])
+            print(f"[FaceDB] Method2 prefix='{CDN_ADMIN_ROOT}' (no slash): {len(items2)} items")
+            for item in items2[:10]:
+                print(f"[FaceDB]   public_id: {item.get('public_id')}")
+            resources = items2
+        except Exception as e:
+            print(f"[FaceDB] Method2 failed: {e}")
+
+    # Method 3: folder param
+    if not resources:
+        try:
+            r3 = cloudinary.api.resources(type="upload", folder=CDN_ADMIN_ROOT, max_results=500)
+            items3 = r3.get("resources", [])
+            print(f"[FaceDB] Method3 folder='{CDN_ADMIN_ROOT}': {len(items3)} items")
+            for item in items3[:10]:
+                print(f"[FaceDB]   public_id: {item.get('public_id')}")
+            resources = items3
+        except Exception as e:
+            print(f"[FaceDB] Method3 failed: {e}")
+
+    # Method 4: list ALL resources and filter manually
+    if not resources:
+        try:
+            r4 = cloudinary.api.resources(type="upload", max_results=500)
+            all_items = r4.get("resources", [])
+            print(f"[FaceDB] Method4 ALL resources: {len(all_items)} total in account")
+            for item in all_items[:20]:
+                print(f"[FaceDB]   public_id: {item.get('public_id')}")
+            # Filter manually
+            resources = [r for r in all_items if CDN_ADMIN_ROOT in r.get("public_id", "")]
+            print(f"[FaceDB] After manual filter for '{CDN_ADMIN_ROOT}': {len(resources)} items")
+        except Exception as e:
+            print(f"[FaceDB] Method4 failed: {e}")
+
+    print(f"[FaceDB] === End diagnostic, {len(resources)} resources to process ===")
+
+    if not resources:
+        print(f"[FaceDB] No photos found anywhere matching '{CDN_ADMIN_ROOT}'.")
+        print(f"[FaceDB] Create folder admin_dataset/Mahi_admin in Cloudinary and upload photos.")
         return
 
     if not resources:
@@ -353,19 +391,42 @@ def build_face_db() -> None:
         print("[FaceDB] Upload photos to Cloudinary → admin_dataset/<Your_Name>/photo.jpg")
         return
 
-    # Group photo URLs by identity name (the sub-folder directly under admin_dataset/)
-    # e.g. public_id "admin_dataset/Mahi_admin/photo1" → identity "Mahi_admin"
+    # Group photo URLs by identity name.
+    # Handle both path formats Cloudinary may return:
+    #   Format A: "admin_dataset/Mahi_admin/photo1"  → parts[1] = "Mahi_admin"
+    #   Format B: "Mahi_admin/photo1"                → parts[0] = "Mahi_admin"
     identity_map: dict[str, list[str]] = {}
     for res in resources:
-        parts = res["public_id"].split("/")
-        if len(parts) < 3:
-            continue                      # ignore files placed directly in admin_dataset/
-        identity_name = parts[1]          # "Mahi_admin"
-        identity_map.setdefault(identity_name, []).append(res["secure_url"])
+        pid   = res.get("public_id", "")
+        url   = res.get("secure_url", "")
+        if not url:
+            continue
+        parts = pid.split("/")
+        print(f"[FaceDB] Parsing public_id='{pid}' parts={parts}")
+
+        if len(parts) >= 3 and parts[0] == CDN_ADMIN_ROOT:
+            # Format A: admin_dataset/Mahi_admin/photo1
+            identity_name = parts[1]
+        elif len(parts) >= 3 and parts[0] != CDN_ADMIN_ROOT:
+            # Format A variant: some_root/admin_dataset/Mahi_admin/photo1
+            try:
+                idx = parts.index(CDN_ADMIN_ROOT)
+                identity_name = parts[idx + 1]
+            except (ValueError, IndexError):
+                continue
+        elif len(parts) == 2:
+            # Format B: Mahi_admin/photo1 (Cloudinary stripped the root)
+            identity_name = parts[0]
+        else:
+            print(f"[FaceDB] Skipping unrecognised path format: '{pid}'")
+            continue
+
+        identity_map.setdefault(identity_name, []).append(url)
 
     if not identity_map:
-        print("[FaceDB] No identity sub-folders found.")
+        print("[FaceDB] No identity sub-folders found after parsing.")
         print("[FaceDB] Photos must be at: admin_dataset/<Name>/<photo>.jpg")
+        print(f"[FaceDB] Got {len(resources)} resources but none matched expected structure.")
         return
 
     total_loaded = 0
