@@ -172,13 +172,13 @@ _last_snapshot   = 0.0   # timestamp of last routine CDN upload
 _last_alert      = 0.0   # timestamp of last alert CDN upload
 _last_identity   = "Unknown"   # most recently confirmed identity name
 _last_match_time = 0.0   # timestamp of last successful face match
-_face_frame_skip = 0     # counter — face recognition runs every Nth frame only
+_last_face_time = 0     # counter — face recognition runs every Nth frame only
 _last_face_results: list = []  # cached face results reused between recognition frames
 
 # How often to run InsightFace (every N frames).
 # YOLO runs every frame (~300ms). InsightFace adds ~2s.
 # At N=6: face ID runs ~once per 2-3s, YOLO detects instantly every frame.
-FACE_RECOGNITION_EVERY_N = 6
+#FACE_RECOGNITION_EVERY_N = 6
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # YOLO object detection — pure ONNX Runtime, no PyTorch dependency
@@ -223,69 +223,59 @@ def _nms(boxes: np.ndarray, scores: np.ndarray, iou_thr: float = 0.45) -> list[i
 
 
 def yolo_detect(frame: np.ndarray) -> list[dict]:
-    """
-    Run YOLOv8n ONNX inference on a BGR frame.
-
-    Returns a list of detections, each a dict:
-        {
-            "label":  str,          # COCO class name
-            "box":    [x, y, w, h], # top-left origin, pixel coords
-            "conf":   float,        # detection confidence 0-1
-            "threat": bool,         # True if label is in HIGH_THREAT_LABELS,
-        }
-    Returns [] if the YOLO session failed to load at startup.
-    """
     if yolo_session is None:
         return []
 
     orig_h, orig_w = frame.shape[:2]
     lb, scale = _letterbox(frame, size=640)
 
-    # Build normalised NCHW blob: [1, 3, 640, 640], values in [0, 1]
     blob = lb.astype(np.float32) / 255.0
     blob = blob.transpose(2, 0, 1)[np.newaxis]
 
     inp  = yolo_session.get_inputs()[0].name
-    raw  = yolo_session.run(None, {inp: blob})[0]   # shape: [1, 84, 8400]
-    pred = raw[0].T                                  # shape: [8400, 84]
+    raw  = yolo_session.run(None, {inp: blob})[0]
+    pred = raw[0].T
 
-    # Columns 0-3: cx, cy, w, h (in letterboxed 640×640 space)
-    # Columns 4-83: per-class scores for the 80 COCO classes
     cls_scores = pred[:, 4:]
     confidence = cls_scores.max(axis=1)
     class_ids  = cls_scores.argmax(axis=1)
 
     mask = confidence > YOLO_CONF
-    
-    print(f"[YOLO] Raw predictions: {pred.shape[0]}, Above threshold {YOLO_CONF}: {mask.sum()}")
+    print(f"[YOLO] Conf threshold {YOLO_CONF}: {mask.sum()}/{len(confidence)} passed")
     
     if not mask.any():
-        print(f"[YOLO] No detections above confidence {YOLO_CONF}")
         return []
 
     p, sc, cids = pred[mask], confidence[mask], class_ids[mask]
 
-    # Convert centre-form → corner-form and scale back to original pixel space
-    cx = p[:, 0] / scale;  cy = p[:, 1] / scale
-    bw = p[:, 2] / scale;  bh = p[:, 3] / scale
-    x1 = np.clip(cx - bw / 2, 0, orig_w).astype(int)
-    y1 = np.clip(cy - bh / 2, 0, orig_h).astype(int)
-    x2 = np.clip(cx + bw / 2, 0, orig_w).astype(int)
-    y2 = np.clip(cy + bh / 2, 0, orig_h).astype(int)
+    inv_scale = 1.0 / scale
+    
+    cx = p[:, 0] * inv_scale
+    cy = p[:, 1] * inv_scale
+    bw = p[:, 2] * inv_scale
+    bh = p[:, 3] * inv_scale
+    
+    x1 = np.clip(cx - bw / 2, 0, orig_w - 1).astype(int)
+    y1 = np.clip(cy - bh / 2, 0, orig_h - 1).astype(int)
+    x2 = np.clip(cx + bw / 2, 1, orig_w).astype(int)
+    y2 = np.clip(cy + bh / 2, 1, orig_h).astype(int)
 
     keep = _nms(np.stack([x1, y1, x2, y2], axis=1), sc)
 
     detections = [
         {
             "label":  COCO_CLASSES[cids[i]],
-            "box":    [int(x1[i]), int(y1[i]), int(x2[i] - x1[i]), int(y2[i] - y1[i])],
+            "box":    [int(x1[i]), int(y1[i]), max(1, int(x2[i] - x1[i])), max(1, int(y2[i] - y1[i]))],
             "conf":   float(sc[i]),
             "threat": COCO_CLASSES[cids[i]] in HIGH_THREAT_LABELS,
         }
         for i in keep
     ]
     
-    print(f"[YOLO] After NMS: {len(detections)} detections — {[d['label'] for d in detections]}")
+    if detections:
+        print(f"[YOLO] Detections: {len(detections)} objects")
+        for d in detections:
+            print(f"  - {d['label']} conf={d['conf']:.2f}")
     
     return detections
 
@@ -827,19 +817,18 @@ async def analyze_frame(background_tasks: BackgroundTasks, file: UploadFile = Fi
     # InsightFace (~2s) only runs every FACE_RECOGNITION_EVERY_N frames.
     # Between recognition frames, the last known identity is reused so the
     # label never disappears — it just updates less frequently.
-    global _face_frame_skip, _last_face_results
+    global _last_face_time, _last_face_results
 
     face_results  = []
     identity_name = "Unknown"
     any_known     = False
 
     if person_dets:
-        _face_frame_skip += 1
-
-        if _face_frame_skip >= FACE_RECOGNITION_EVERY_N:
-            # Run full face recognition this frame
-            _face_frame_skip  = 0
+        # Run face recognition max once every 2 seconds (not every frame)
+        if now - _last_face_time >= 2.0:
             _last_face_results = identify_faces(frame)
+            _last_face_time = now
+            print(f"[FaceID] Running recognition (gap: {now - _last_face_time:.1f}s)")
 
         # Use either fresh results or cached results from last recognition frame
         face_results = _last_face_results
