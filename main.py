@@ -109,10 +109,10 @@ IDENTITY_GRACE = 3.0
 # Range: [-1, 1]. Same person typically scores > 0.30.
 # Raise toward 0.45 to reduce false positives (stricter).
 # Lower toward 0.32 if the correct admin is being missed (more lenient).
-FACE_THRESHOLD = 0.40
+FACE_THRESHOLD = 0.32
 
 # YOLO detection confidence — detections below this are discarded
-YOLO_CONF = 0.50
+YOLO_CONF = 0.40
 
 # ── COCO 80 class names — order must match YOLOv8n ONNX output tensor exactly ─
 COCO_CLASSES = [
@@ -256,7 +256,11 @@ def yolo_detect(frame: np.ndarray) -> list[dict]:
     class_ids  = cls_scores.argmax(axis=1)
 
     mask = confidence > YOLO_CONF
+    
+    print(f"[YOLO] Raw predictions: {pred.shape[0]}, Above threshold {YOLO_CONF}: {mask.sum()}")
+    
     if not mask.any():
+        print(f"[YOLO] No detections above confidence {YOLO_CONF}")
         return []
 
     p, sc, cids = pred[mask], confidence[mask], class_ids[mask]
@@ -271,7 +275,7 @@ def yolo_detect(frame: np.ndarray) -> list[dict]:
 
     keep = _nms(np.stack([x1, y1, x2, y2], axis=1), sc)
 
-    return [
+    detections = [
         {
             "label":  COCO_CLASSES[cids[i]],
             "box":    [int(x1[i]), int(y1[i]), int(x2[i] - x1[i]), int(y2[i] - y1[i])],
@@ -280,6 +284,10 @@ def yolo_detect(frame: np.ndarray) -> list[dict]:
         }
         for i in keep
     ]
+    
+    print(f"[YOLO] After NMS: {len(detections)} detections — {[d['label'] for d in detections]}")
+    
+    return detections
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
