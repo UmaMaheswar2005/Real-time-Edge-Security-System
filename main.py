@@ -184,7 +184,7 @@ FACE_RECOGNITION_EVERY_N = 6
 # YOLO object detection — pure ONNX Runtime, no PyTorch dependency
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def _letterbox(frame: np.ndarray, size: int = 416):
+def _letterbox(frame: np.ndarray, size: int = 640):
     """
     Resize frame to size×size with letterbox padding (grey fill, top-left aligned).
     Returns (padded_frame, scale_factor) so detections can be mapped back to
@@ -231,7 +231,7 @@ def yolo_detect(frame: np.ndarray) -> list[dict]:
             "label":  str,          # COCO class name
             "box":    [x, y, w, h], # top-left origin, pixel coords
             "conf":   float,        # detection confidence 0-1
-            "threat": bool,         # True if label is in HIGH_THREAT_LABELS
+            "threat": bool,         # True if label is in HIGH_THREAT_LABELS,
         }
     Returns [] if the YOLO session failed to load at startup.
     """
@@ -239,15 +239,14 @@ def yolo_detect(frame: np.ndarray) -> list[dict]:
         return []
 
     orig_h, orig_w = frame.shape[:2]
-    lb, scale = _letterbox(frame)
+    lb, scale = _letterbox(frame, size=640)
 
-    # Build normalised NCHW blob: [1, 3, 416, 416], values in [0, 1]
-    # 416px input cuts inference time ~40% vs 640px with minimal accuracy loss
+    # Build normalised NCHW blob: [1, 3, 640, 640], values in [0, 1]
     blob = lb.astype(np.float32) / 255.0
     blob = blob.transpose(2, 0, 1)[np.newaxis]
 
     inp  = yolo_session.get_inputs()[0].name
-    raw  = yolo_session.run(None, {inp: blob})[0]   # shape: [1, 84, 5460]
+    raw  = yolo_session.run(None, {inp: blob})[0]   # shape: [1, 84, 8400]
     pred = raw[0].T                                  # shape: [8400, 84]
 
     # Columns 0-3: cx, cy, w, h (in letterboxed 640×640 space)
