@@ -172,12 +172,19 @@ _last_snapshot   = 0.0   # timestamp of last routine CDN upload
 _last_alert      = 0.0   # timestamp of last alert CDN upload
 _last_identity   = "Unknown"   # most recently confirmed identity name
 _last_match_time = 0.0   # timestamp of last successful face match
+_face_frame_skip = 0     # counter — face recognition runs every Nth frame only
+_last_face_results: list = []  # cached face results reused between recognition frames
+
+# How often to run InsightFace (every N frames).
+# YOLO runs every frame (~300ms). InsightFace adds ~2s.
+# At N=6: face ID runs ~once per 2-3s, YOLO detects instantly every frame.
+FACE_RECOGNITION_EVERY_N = 6
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # YOLO object detection — pure ONNX Runtime, no PyTorch dependency
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def _letterbox(frame: np.ndarray, size: int = 640):
+def _letterbox(frame: np.ndarray, size: int = 416):
     """
     Resize frame to size×size with letterbox padding (grey fill, top-left aligned).
     Returns (padded_frame, scale_factor) so detections can be mapped back to
@@ -234,12 +241,13 @@ def yolo_detect(frame: np.ndarray) -> list[dict]:
     orig_h, orig_w = frame.shape[:2]
     lb, scale = _letterbox(frame)
 
-    # Build normalised NCHW blob: [1, 3, 640, 640], values in [0, 1]
+    # Build normalised NCHW blob: [1, 3, 416, 416], values in [0, 1]
+    # 416px input cuts inference time ~40% vs 640px with minimal accuracy loss
     blob = lb.astype(np.float32) / 255.0
     blob = blob.transpose(2, 0, 1)[np.newaxis]
 
     inp  = yolo_session.get_inputs()[0].name
-    raw  = yolo_session.run(None, {inp: blob})[0]   # shape: [1, 84, 8400]
+    raw  = yolo_session.run(None, {inp: blob})[0]   # shape: [1, 84, 5460]
     pred = raw[0].T                                  # shape: [8400, 84]
 
     # Columns 0-3: cx, cy, w, h (in letterboxed 640×640 space)
@@ -746,27 +754,39 @@ async def analyze_frame(background_tasks: BackgroundTasks, file: UploadFile = Fi
     person_dets = [d for d in detections if d["label"] == "person"]
     threat_dets = [d for d in detections if d["threat"]]
 
-    # ── Step 2: Face recognition (only when at least one person is detected) ──
+    # ── Step 2: Face recognition (decimated — runs every N frames) ──────────
+    # YOLO (~300ms) runs every frame for instant detection.
+    # InsightFace (~2s) only runs every FACE_RECOGNITION_EVERY_N frames.
+    # Between recognition frames, the last known identity is reused so the
+    # label never disappears — it just updates less frequently.
+    global _face_frame_skip, _last_face_results
+
     face_results  = []
     identity_name = "Unknown"
     any_known     = False
 
     if person_dets:
-        face_results = identify_faces(frame)
+        _face_frame_skip += 1
 
-        # Check if any face in this frame matched a known identity
+        if _face_frame_skip >= FACE_RECOGNITION_EVERY_N:
+            # Run full face recognition this frame
+            _face_frame_skip  = 0
+            _last_face_results = identify_faces(frame)
+
+        # Use either fresh results or cached results from last recognition frame
+        face_results = _last_face_results
+
+        # Check for a known identity in current face results
         for _, name in face_results:
             if name != "Unknown":
                 _last_identity   = name
                 _last_match_time = now
                 any_known        = True
-                break  # one confirmed match is enough to mark the frame
+                break
 
-        # Grace period: if no match this frame but we had one recently,
-        # carry the last identity forward to avoid flickering labels
+        # Grace period: carry last known identity forward to prevent flicker
         if not any_known and (now - _last_match_time) < IDENTITY_GRACE:
             if _last_identity != "Unknown":
-                # Inject a virtual face entry so person boxes get labelled correctly
                 face_results = [([0, 0, 1, 1], _last_identity)] + face_results
                 any_known    = True
 
@@ -774,10 +794,11 @@ async def analyze_frame(background_tasks: BackgroundTasks, file: UploadFile = Fi
         _last_identity = identity_name
 
     else:
-        # No person in frame — reset identity (grace period does not apply
-        # when there is literally nobody visible)
-        _last_identity = "Unknown"
-        identity_name  = "Unknown"
+        # No person visible — reset state
+        _face_frame_skip   = 0
+        _last_face_results = []
+        _last_identity     = "Unknown"
+        identity_name      = "Unknown"
 
     # ── Step 3: Per-person labelling ──────────────────────────────────────────
     # Each YOLO detection keeps its original label except "person" boxes,

@@ -583,17 +583,20 @@ stopBtn.addEventListener('click', () => {
 // Frame capture — uses offscreen canvas so display canvas never freezes
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function captureBlob(quality = 0.75) {
-  // Draw video into the OFFSCREEN canvas (never shown to user)
+function captureBlob(quality = 0.55) {
+  // Draw full video into offscreen canvas (never shown to user)
   offscreen.width  = video.videoWidth  || 640;
   offscreen.height = video.videoHeight || 480;
   offscreenCtx.drawImage(video, 0, 0, offscreen.width, offscreen.height);
 
-  // Sync display canvas dimensions without drawing the video onto it
+  // Sync display canvas dimensions
   canvas.width  = offscreen.width;
   canvas.height = offscreen.height;
 
-  return new Promise(resolve => offscreen.toBlob(resolve, 'image/jpeg', quality));
+  // Resize to max 640px wide before encoding — halves payload size,
+  // backend YOLO works fine at 640px input
+  const sendCanvas = resizeForCapture(offscreen, 640);
+  return new Promise(resolve => sendCanvas.toBlob(resolve, 'image/jpeg', quality));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -619,12 +622,24 @@ async function runAnalysis() {
   scheduleNextFrame();
 }
 
+// Resize frame before sending — smaller payload = faster backend round-trip.
+// 640px wide is enough for YOLO detection, no need to send full 1280px.
+function resizeForCapture(sourceCanvas, maxWidth = 640) {
+  const ratio = Math.min(1, maxWidth / (sourceCanvas.width || maxWidth));
+  const w = Math.round((sourceCanvas.width || maxWidth) * ratio);
+  const h = Math.round((sourceCanvas.height || 480) * ratio);
+  const tmp = document.createElement('canvas');
+  tmp.width = w; tmp.height = h;
+  tmp.getContext('2d').drawImage(sourceCanvas, 0, 0, w, h);
+  return tmp;
+}
+
 async function analyzeFrame() {
   if (isAnalysing) return;
   isAnalysing = true;
 
   try {
-    const blob = await captureBlob(0.75);
+    const blob = await captureBlob();  // uses default 0.55 quality, 640px max width
     const fd   = new FormData();
     fd.append('file', blob, 'frame.jpg');
 
